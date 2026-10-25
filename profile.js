@@ -66,7 +66,7 @@ export function onUserGone() {
 }
 
 function showMe() {
-  $("userLine").textContent = "Signed in as " + me.displayName;
+  $("userLine").textContent = "Signed in as " + me.displayName + (me.bio ? " · " + me.bio : "");
   $("meBtn").textContent = me.displayName.charAt(0).toUpperCase();
 }
 
