@@ -1,16 +1,12 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
 import {
-  getAuth,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
   updateProfile
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-import { firebaseConfig } from "./firebase-config.js";
-
-const fbApp = initializeApp(firebaseConfig);
-const auth = getAuth(fbApp);
+import { auth } from "./firebase.js";
+import { ensureProfile, onUserReady, onUserGone } from "./profile.js";
 
 const $ = (id) => document.getElementById(id);
 const authScreen = $("authScreen");
@@ -19,6 +15,7 @@ const form = $("authForm");
 const errorEl = $("authError");
 const submitBtn = $("authSubmit");
 let mode = "login"; // "login" or "signup"
+let creatingAccount = false;
 
 function setMode(next) {
   mode = next;
@@ -66,9 +63,11 @@ form.addEventListener("submit", async (e) => {
   submitBtn.disabled = true;
   try {
     if (mode === "signup") {
+      creatingAccount = true;
       const cred = await createUserWithEmailAndPassword(auth, email, password);
       await updateProfile(cred.user, { displayName: name });
-      $("userLine").textContent = "Signed in as " + name;
+      await ensureProfile(cred.user, name);
+      await onUserReady(cred.user);
     } else {
       await signInWithEmailAndPassword(auth, email, password);
     }
@@ -76,6 +75,7 @@ form.addEventListener("submit", async (e) => {
   } catch (err) {
     errorEl.textContent = friendlyError(err.code);
   } finally {
+    creatingAccount = false;
     submitBtn.disabled = false;
   }
 });
@@ -86,7 +86,9 @@ onAuthStateChanged(auth, (user) => {
   authScreen.hidden = !!user;
   appEl.hidden = !user;
   if (user) {
-    $("userLine").textContent = "Signed in as " + (user.displayName || user.email);
+    if (!creatingAccount) onUserReady(user);
+  } else {
+    onUserGone();
   }
 });
 
