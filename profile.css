@@ -1,0 +1,59 @@
+.me-btn {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--blue);
+  color: #fff;
+  font-weight: 800;
+  font-size: 1rem;
+}
+.me-btn + .logout { margin-left: 8px; }
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.55);
+}
+.modal-card {
+  width: 100%;
+  max-width: 400px;
+  max-height: 90dvh;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  padding: 24px 20px;
+}
+.modal-card h2 { margin-bottom: 12px; text-align: center; }
+.modal-card textarea {
+  width: 100%;
+  padding: 13px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  outline: none;
+  resize: none;
+}
+.modal-card textarea:focus { border-color: var(--green); }
+.modal-card small { color: var(--muted); }
+.modal-actions { display: flex; gap: 10px; margin-top: 8px; }
+.modal-actions button { flex: 1; }
+.btn-ghost {
+  padding: 14px;
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--muted);
+  font-weight: 700;
+}
+.person { text-align: center; }
+.person .avatar { width: 84px; height: 84px; font-size: 2rem; margin: 0 auto 10px; }
+.person .bio { margin: 8px 0 16px; color: var(--muted); }
+.person .auth-submit { width: 100%; }
+.empty-note { padding: 24px 16px; text-align: center; color: var(--muted); }
