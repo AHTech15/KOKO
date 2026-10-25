@@ -9,13 +9,32 @@ const $ = (id) => document.getElementById(id);
 const palette = ["#22c55e", "#3b82f6", "#14b8a6", "#f59e0b", "#ec4899", "#8b5cf6"];
 const appEl = $("app");
 
-const users = new Map();   // uid -> { displayName, bio }
+/* Extra styles for ticks, unread dots and the alerts button */
+const cssLink = document.createElement("link");
+cssLink.rel = "stylesheet";
+cssLink.href = "chat.css";
+document.head.append(cssLink);
+
+/* Service worker (needed so Android can show notifications) */
+let swReg = null;
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").then((r) => (swReg = r)).catch(() => {});
+}
+
+const users = new Map();       // uid -> { displayName, bio }
+const myReads = new Map();     // chatId -> when I last read it (ms)
+const readUnsubs = new Map();  // chatId -> unsubscribe function
 let unsubChats = null;
 let unsubMsgs = null;
-let chats = [];            // { id, otherUid, lastMessage, lastMessageAt, lastSenderId }
-let current = null;        // { id, otherUid }
+let unsubOtherRead = null;
+let chats = [];                // { id, otherUid, lastMessage, lastMessageAt, lastSenderId }
+let current = null;            // { id, otherUid }
 let filter = "all";
 let term = "";
+let firstSnapshot = true;
+let otherReadAt = 0;
+let lastItems = [];
+let lastMarkedIncoming = 0;
 
 function colorFor(name) {
   let h = 0;
@@ -56,6 +75,80 @@ async function getUser(uid) {
   return info;
 }
 
+/* ---------- Alerts: sound, title count, notification ---------- */
+const notifyBtn = document.createElement("button");
+notifyBtn.type = "button";
+notifyBtn.className = "notify-btn";
+$("userLine").after(notifyBtn);
+
+function updateNotifyBtn() {
+  if (!("Notification" in window)) {
+    notifyBtn.hidden = true;
+    return;
+  }
+  if (Notification.permission === "granted") {
+    notifyBtn.textContent = "🔔 Alerts are on";
+    notifyBtn.disabled = true;
+  } else if (Notification.permission === "denied") {
+    notifyBtn.textContent = "🔕 Alerts blocked in browser settings";
+    notifyBtn.disabled = true;
+  } else {
+    notifyBtn.textContent = "🔔 Turn on alerts";
+    notifyBtn.disabled = false;
+  }
+}
+notifyBtn.addEventListener("click", async () => {
+  try {
+    await Notification.requestPermission();
+  } catch (e) { /* ignore */ }
+  updateNotifyBtn();
+});
+updateNotifyBtn();
+
+let audioCtx = null;
+function beep() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = "sine";
+    o.frequency.value = 880;
+    g.gain.value = 0.08;
+    o.connect(g);
+    g.connect(audioCtx.destination);
+    o.start();
+    o.stop(audioCtx.currentTime + 0.15);
+  } catch (e) { /* ignore */ }
+}
+
+function isUnread(c) {
+  const me = auth.currentUser && auth.currentUser.uid;
+  if (!c.lastMessage || !c.lastSenderId || c.lastSenderId === me) return false;
+  if (current && current.id === c.id && !document.hidden) return false;
+  return c.lastMessageAt > (myReads.get(c.id) || 0);
+}
+
+function updateTitle() {
+  const n = chats.filter(isUnread).length;
+  document.title = n > 0 ? "(" + n + ") KoKo" : "KoKo";
+}
+
+async function alertNew(n) {
+  if (current && current.id === n.id && !document.hidden) return;
+  beep();
+  if ("Notification" in window && Notification.permission === "granted" && document.hidden) {
+    const u = await getUser(n.otherUid);
+    const body = n.text.slice(0, 100);
+    try {
+      if (swReg && swReg.showNotification) {
+        swReg.showNotification(u.displayName, { body, tag: n.id });
+      } else {
+        new Notification(u.displayName, { body, tag: n.id });
+      }
+    } catch (e) { /* ignore */ }
+  }
+}
+
 /* ---------- Chat list ---------- */
 function note(text) {
   const li = document.createElement("li");
@@ -88,9 +181,10 @@ function renderList() {
 
   shown.forEach((c) => {
     const u = users.get(c.otherUid) || { displayName: "Unknown user" };
+    const unread = isUnread(c);
     const li = document.createElement("li");
     const btn = document.createElement("button");
-    btn.className = "chat-item" + (current && current.id === c.id ? " active" : "");
+    btn.className = "chat-item" + (current && current.id === c.id ? " active" : "") + (unread ? " unread" : "");
 
     const info = document.createElement("div");
     info.className = "chat-info";
@@ -108,18 +202,43 @@ function renderList() {
     info.append(top, prev);
 
     btn.append(makeAvatar(u.displayName), info);
+    if (unread) {
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      btn.append(dot);
+    }
     btn.addEventListener("click", () => openConversation(c.id, c.otherUid));
     li.append(btn);
     list.append(li);
   });
 }
 
+/* Watch when I last read each chat (for unread dots) */
+function watchReads(uid, list) {
+  list.slice(0, 30).forEach((c) => {
+    if (readUnsubs.has(c.id)) return;
+    const unsub = onSnapshot(doc(db, "chats", c.id, "reads", uid), (snap) => {
+      let ms = 0;
+      if (snap.exists()) {
+        const ra = snap.data({ serverTimestamps: "estimate" }).readAt;
+        ms = ra ? ra.toMillis() : Date.now();
+      }
+      myReads.set(c.id, ms);
+      renderList();
+      updateTitle();
+    }, () => {});
+    readUnsubs.set(c.id, unsub);
+  });
+}
+
 function startChats(user) {
+  firstSnapshot = true;
   const q = query(collection(db, "chats"), where("members", "array-contains", user.uid));
   unsubChats = onSnapshot(q, async (snap) => {
     const list = [];
+    const toAlert = [];
     snap.forEach((d) => {
-      const data = d.data();
+      const data = d.data({ serverTimestamps: "estimate" });
       const otherUid = data.members.find((m) => m !== user.uid);
       list.push({
         id: d.id,
@@ -129,9 +248,26 @@ function startChats(user) {
         lastSenderId: data.lastSenderId || ""
       });
     });
+    if (!firstSnapshot) {
+      snap.docChanges().forEach((ch) => {
+        if (ch.type !== "added" && ch.type !== "modified") return;
+        const d = ch.doc.data({ serverTimestamps: "estimate" });
+        if (d.lastMessage && d.lastSenderId && d.lastSenderId !== user.uid) {
+          toAlert.push({
+            id: ch.doc.id,
+            otherUid: d.members.find((m) => m !== user.uid),
+            text: d.lastMessage
+          });
+        }
+      });
+    }
+    firstSnapshot = false;
     await Promise.all(list.map((c) => getUser(c.otherUid)));
     chats = list.sort((a, b) => b.lastMessageAt - a.lastMessageAt);
+    watchReads(user.uid, chats);
     renderList();
+    updateTitle();
+    toAlert.forEach(alertNew);
   }, (err) => {
     console.error(err);
     const l = $("chatList");
@@ -143,15 +279,24 @@ function startChats(user) {
 function stopChats() {
   if (unsubChats) unsubChats();
   if (unsubMsgs) unsubMsgs();
-  unsubChats = unsubMsgs = null;
+  if (unsubOtherRead) unsubOtherRead();
+  readUnsubs.forEach((u) => u());
+  readUnsubs.clear();
+  myReads.clear();
+  unsubChats = unsubMsgs = unsubOtherRead = null;
   chats = [];
   current = null;
+  lastItems = [];
+  otherReadAt = 0;
+  lastMarkedIncoming = 0;
+  firstSnapshot = true;
   users.clear();
   $("chatList").innerHTML = "";
   $("messages").innerHTML = "";
   $("convo").hidden = true;
   $("empty").hidden = false;
   appEl.classList.remove("chat-open");
+  document.title = "KoKo";
 }
 
 /* ---------- Open a conversation ---------- */
@@ -179,9 +324,25 @@ async function openChatWith(otherUid) {
   }
 }
 
+/* Tell the other person I have read this chat */
+function markRead(force) {
+  if (!current || document.hidden) return;
+  const latest = lastItems.length ? lastItems[lastItems.length - 1] : null;
+  const incomingTime = latest && !latest.mine ? latest.time : 0;
+  if (!force && incomingTime <= lastMarkedIncoming) return;
+  lastMarkedIncoming = incomingTime || lastMarkedIncoming;
+  setDoc(doc(db, "chats", current.id, "reads", auth.currentUser.uid), {
+    readAt: serverTimestamp()
+  }).catch((err) => console.error(err));
+}
+
 async function openConversation(id, otherUid) {
   if (unsubMsgs) unsubMsgs();
+  if (unsubOtherRead) unsubOtherRead();
   current = { id, otherUid };
+  lastItems = [];
+  otherReadAt = 0;
+  lastMarkedIncoming = 0;
   const u = await getUser(otherUid);
 
   $("empty").hidden = true;
@@ -194,6 +355,18 @@ async function openConversation(id, otherUid) {
   $("messages").innerHTML = "";
   appEl.classList.add("chat-open");
   renderList();
+  updateTitle();
+  markRead(true);
+
+  unsubOtherRead = onSnapshot(doc(db, "chats", id, "reads", otherUid), (snap) => {
+    let ms = 0;
+    if (snap.exists()) {
+      const ra = snap.data({ serverTimestamps: "estimate" }).readAt;
+      ms = ra ? ra.toMillis() : 0;
+    }
+    otherReadAt = ms;
+    renderMessages(lastItems);
+  }, () => {});
 
   const q = query(
     collection(db, "chats", id, "messages"),
@@ -207,11 +380,14 @@ async function openConversation(id, otherUid) {
       items.push({
         text: m.text,
         mine: m.senderId === auth.currentUser.uid,
-        time: m.createdAt ? m.createdAt.toMillis() : Date.now()
+        time: m.createdAt ? m.createdAt.toMillis() : Date.now(),
+        pending: d.metadata.hasPendingWrites
       });
     });
     items.reverse();
+    lastItems = items;
     renderMessages(items);
+    markRead(false);
   }, (err) => {
     console.error(err);
     $("messages").textContent = "Could not load messages.";
@@ -227,6 +403,19 @@ function renderMessages(items) {
     div.textContent = m.text;
     const t = document.createElement("small");
     t.textContent = formatTime(m.time);
+    if (m.mine) {
+      const tick = document.createElement("span");
+      tick.className = "tick";
+      if (m.pending) {
+        tick.textContent = "🕓";
+      } else if (m.time <= otherReadAt) {
+        tick.textContent = "✓✓";
+        tick.classList.add("read");
+      } else {
+        tick.textContent = "✓";
+      }
+      t.append(tick);
+    }
     div.append(t);
     box.append(div);
   });
@@ -264,12 +453,23 @@ $("composer").addEventListener("submit", async (e) => {
 /* ---------- Navigation and events ---------- */
 $("backBtn").addEventListener("click", () => {
   if (unsubMsgs) unsubMsgs();
-  unsubMsgs = null;
+  if (unsubOtherRead) unsubOtherRead();
+  unsubMsgs = unsubOtherRead = null;
   current = null;
+  lastItems = [];
   appEl.classList.remove("chat-open");
   $("convo").hidden = true;
   $("empty").hidden = false;
   renderList();
+  updateTitle();
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && current) {
+    markRead(true);
+    renderList();
+    updateTitle();
+  }
 });
 
 document.addEventListener("koko:message", (e) => {
