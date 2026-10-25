@@ -89,8 +89,7 @@
           <polygon points="52,50 56,61 41,51" fill="#3b82f6"/>
         </svg>
         <h2>Welcome to KoKo</h2>
-        <p>Pick a chat to start talking.</p>
-        <small>Demo chats: real messaging arrives in Stage 4.</small>
+        <p>Pick a chat, or find someone in People.</p>
       </div>
 
       <section class="convo" id="convo" hidden>
@@ -106,7 +105,7 @@
         <div class="messages" id="messages"></div>
 
         <form class="composer" id="composer" autocomplete="off">
-          <input id="msgInput" type="text" placeholder="Type a message" aria-label="Message">
+          <input id="msgInput" type="text" placeholder="Type a message" aria-label="Message" maxlength="1000">
           <button type="submit" class="send" aria-label="Send">&#10148;</button>
         </form>
       </section>
@@ -139,14 +138,14 @@
       <div id="personAvatar"></div>
       <h2 id="personName"></h2>
       <p class="bio" id="personBio"></p>
-      <button type="button" class="auth-submit" disabled>Message (coming in Stage 4)</button>
+      <button type="button" class="auth-submit" id="personMsg">Message</button>
       <div class="modal-actions">
         <button type="button" class="btn-ghost" id="personClose">Close</button>
       </div>
     </div>
   </div>
 
-  <script src="app.js"></script>
   <script type="module" src="auth.js"></script>
+  <script type="module" src="chat.js"></script>
 </body>
 </html>
