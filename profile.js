@@ -11,6 +11,7 @@ const palette = ["#22c55e", "#3b82f6", "#14b8a6", "#f59e0b", "#ec4899", "#8b5cf6
 let me = null;            // { uid, displayName, bio }
 let people = [];          // other users
 let peopleLoaded = false;
+let selected = null;      // person whose card is open
 
 function colorFor(name) {
   let h = 0;
@@ -173,6 +174,7 @@ function renderPeople() {
 }
 
 function openPerson(p) {
+  selected = p;
   const holder = $("personAvatar");
   holder.innerHTML = "";
   holder.append(makeAvatar(p.displayName));
@@ -181,6 +183,11 @@ function openPerson(p) {
   $("personModal").hidden = false;
 }
 $("personClose").addEventListener("click", () => ($("personModal").hidden = true));
+
+$("personMsg").addEventListener("click", () => {
+  if (!selected) return;
+  document.dispatchEvent(new CustomEvent("koko:message", { detail: { uid: selected.uid } }));
+});
 
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {
