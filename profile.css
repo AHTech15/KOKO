@@ -57,3 +57,7 @@
 .person .bio { margin: 8px 0 16px; color: var(--muted); }
 .person .auth-submit { width: 100%; }
 .empty-note { padding: 24px 16px; text-align: center; color: var(--muted); }
+.modal-card textarea {
+  color: var(--text);
+  font: inherit;
+}
