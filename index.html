@@ -7,6 +7,7 @@
   <title>KoKo</title>
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="auth.css">
+  <link rel="stylesheet" href="profile.css">
 </head>
 <body>
 
@@ -59,21 +60,24 @@
           <polygon points="52,50 56,61 41,51" fill="#3b82f6"/>
         </svg>
         <span class="brand">KoKo</span>
+        <button type="button" class="me-btn" id="meBtn" aria-label="My profile"></button>
         <button type="button" class="logout" id="logoutBtn">Log out</button>
       </header>
       <p class="user-line" id="userLine"></p>
 
       <div class="search">
-        <input id="search" type="search" placeholder="Search chats" aria-label="Search chats">
+        <input id="search" type="search" placeholder="Search" aria-label="Search">
       </div>
 
       <div class="tabs">
         <button class="tab active" data-filter="all">All</button>
         <button class="tab" data-filter="direct">Chats</button>
         <button class="tab" data-filter="group">Groups</button>
+        <button class="tab" data-filter="people">People</button>
       </div>
 
       <ul class="chat-list" id="chatList"></ul>
+      <ul class="chat-list" id="peopleList" hidden></ul>
     </aside>
 
     <main class="chat">
@@ -86,7 +90,7 @@
         </svg>
         <h2>Welcome to KoKo</h2>
         <p>Pick a chat to start talking.</p>
-        <small>Demo mode: messages are not saved yet.</small>
+        <small>Demo chats: real messaging arrives in Stage 4.</small>
       </div>
 
       <section class="convo" id="convo" hidden>
@@ -108,6 +112,38 @@
       </section>
     </main>
 
+  </div>
+
+  <!-- My profile -->
+  <div class="modal" id="profileModal" hidden>
+    <div class="modal-card">
+      <h2>My profile</h2>
+      <form class="auth-form" id="profileForm">
+        <label for="pName">Name</label>
+        <input id="pName" type="text" maxlength="30" required>
+        <label for="pBio">About you</label>
+        <textarea id="pBio" rows="3" maxlength="140"></textarea>
+        <small id="bioCount">0/140</small>
+        <p class="auth-error" id="profileMsg" role="alert"></p>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" id="profileClose">Close</button>
+          <button type="submit" class="auth-submit">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Someone else's profile -->
+  <div class="modal" id="personModal" hidden>
+    <div class="modal-card person">
+      <div id="personAvatar"></div>
+      <h2 id="personName"></h2>
+      <p class="bio" id="personBio"></p>
+      <button type="button" class="auth-submit" disabled>Message (coming in Stage 4)</button>
+      <div class="modal-actions">
+        <button type="button" class="btn-ghost" id="personClose">Close</button>
+      </div>
+    </div>
   </div>
 
   <script src="app.js"></script>
