@@ -1,0 +1,24 @@
+.chat-item .dot {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--green);
+}
+.chat-item.unread .preview { color: var(--text); font-weight: 700; }
+.chat-item.unread .chat-top small { color: var(--green); font-weight: 700; }
+
+.tick { margin-left: 4px; letter-spacing: -2px; }
+.tick.read { color: #bae6fd; opacity: 1; }
+
+.notify-btn {
+  display: block;
+  margin: 0 16px 8px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+.notify-btn:disabled { opacity: 0.8; }
