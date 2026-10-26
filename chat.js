@@ -5,9 +5,9 @@ import {
   collection, query, where, orderBy, limit,
   onSnapshot, writeBatch, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { makeAvatar, colorFor } from "./avatar.js";
 
 const $ = (id) => document.getElementById(id);
-const palette = ["#22c55e", "#3b82f6", "#14b8a6", "#f59e0b", "#ec4899", "#8b5cf6"];
 const appEl = $("app");
 const MAX_MEMBERS = 50;
 
@@ -25,7 +25,7 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("sw.js").then((r) => (swReg = r)).catch(() => {});
 }
 
-const users = new Map();       // uid -> { displayName, bio }
+const users = new Map();       // uid -> { displayName, bio, photo, emoji, color }
 const myReads = new Map();     // chatId -> when I last read it (ms)
 const readUnsubs = new Map();  // chatId -> unsubscribe function
 let unsubChats = null;
@@ -43,18 +43,21 @@ let infoRefresh = null;
 
 const myUid = () => auth.currentUser.uid;
 
-function colorFor(name) {
-  let h = 0;
-  for (const c of name) h = (h + c.charCodeAt(0)) % palette.length;
-  return palette[h];
-}
+/* Picture settings of a person, for makeAvatar */
+const optsOf = (u) => ({
+  photo: (u && u.photo) || "",
+  emoji: (u && u.emoji) || "",
+  color: (u && u.color) || ""
+});
 
-function makeAvatar(name, isGroup) {
-  const d = document.createElement("div");
-  d.className = "avatar";
-  d.style.background = colorFor(name);
-  d.textContent = isGroup ? "👥" : name.charAt(0).toUpperCase();
-  return d;
+function userFromDoc(d) {
+  return {
+    displayName: d.displayName,
+    bio: d.bio || "",
+    photo: d.photo || "",
+    emoji: d.avatarEmoji || "",
+    color: d.avatarColor || ""
+  };
 }
 
 function formatTime(ms) {
@@ -68,13 +71,10 @@ function formatTime(ms) {
 
 async function getUser(uid) {
   if (users.has(uid)) return users.get(uid);
-  let info = { displayName: "Unknown user", bio: "" };
+  let info = { displayName: "Unknown user", bio: "", photo: "", emoji: "", color: "" };
   try {
     const snap = await getDoc(doc(db, "users", uid));
-    if (snap.exists()) {
-      const d = snap.data();
-      info = { displayName: d.displayName, bio: d.bio || "" };
-    }
+    if (snap.exists()) info = userFromDoc(snap.data());
   } catch (err) {
     console.error(err);
   }
@@ -86,9 +86,9 @@ async function loadAllPeople() {
   const snap = await getDocs(query(collection(db, "users"), orderBy("displayNameLower"), limit(50)));
   const arr = [];
   snap.forEach((d) => {
-    const x = d.data();
-    users.set(d.id, { displayName: x.displayName, bio: x.bio || "" });
-    arr.push({ uid: d.id, displayName: x.displayName });
+    const info = userFromDoc(d.data());
+    users.set(d.id, info);
+    arr.push({ uid: d.id, ...info });
   });
   return arr;
 }
@@ -179,6 +179,11 @@ function chatTitle(c) {
   return (users.get(c.otherUid) || { displayName: "Unknown user" }).displayName;
 }
 
+function chatAvatar(c) {
+  if (c.type === "group") return makeAvatar(c.name, { group: true });
+  return makeAvatar(chatTitle(c), optsOf(users.get(c.otherUid)));
+}
+
 function previewText(c) {
   if (!c.lastMessage) return "No messages yet";
   const mine = c.lastSenderId === myUid();
@@ -230,7 +235,7 @@ function renderList() {
     prev.textContent = previewText(c);
     info.append(top, prev);
 
-    btn.append(makeAvatar(title, c.type === "group"), info);
+    btn.append(chatAvatar(c), info);
     if (unread) {
       const dot = document.createElement("span");
       dot.className = "dot";
@@ -399,12 +404,12 @@ function refreshHeader() {
     }
     $("headName").textContent = current.name;
     $("headStatus").textContent = current.count + " members · tap for info";
-    holder.append(makeAvatar(current.name, true));
+    holder.append(makeAvatar(current.name, { group: true }));
   } else {
     const u = users.get(current.otherUid) || { displayName: "Unknown user", bio: "" };
     $("headName").textContent = u.displayName;
     $("headStatus").textContent = u.bio;
-    holder.append(makeAvatar(u.displayName, false));
+    holder.append(makeAvatar(u.displayName, optsOf(u)));
   }
 }
 
@@ -606,7 +611,7 @@ function renderPicker(list, people) {
     box.type = "checkbox";
     box.id = "pick_" + p.uid;
     box.value = p.uid;
-    li.append(makeAvatar(p.displayName, false), label, box);
+    li.append(makeAvatar(p.displayName, optsOf(p)), label, box);
     list.append(li);
     boxes.push(box);
   });
@@ -756,7 +761,7 @@ async function openGroupInfo() {
         badge.textContent = "Admin";
         nameBox.append(badge);
       }
-      row.append(makeAvatar(u.displayName, false), nameBox);
+      row.append(makeAvatar(u.displayName, optsOf(u)), nameBox);
 
       if (isAdmin && uid !== me) {
         const actions = document.createElement("div");
