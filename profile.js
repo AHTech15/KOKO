@@ -4,28 +4,18 @@ import {
   doc, getDoc, setDoc, updateDoc, serverTimestamp,
   collection, query, orderBy, limit, getDocs
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { makeAvatar, photoFromFile, palette, emojis } from "./avatar.js";
 
 const $ = (id) => document.getElementById(id);
-const palette = ["#22c55e", "#3b82f6", "#14b8a6", "#f59e0b", "#ec4899", "#8b5cf6"];
 
-let me = null;            // { uid, displayName, bio }
+let me = null;            // { uid, displayName, bio, photo, emoji, color }
 let people = [];          // other users
 let peopleLoaded = false;
 let selected = null;      // person whose card is open
+let draft = { photo: "", emoji: "", color: "" };
+let editor = null;
 
-function colorFor(name) {
-  let h = 0;
-  for (const c of name) h = (h + c.charCodeAt(0)) % palette.length;
-  return palette[h];
-}
-
-function makeAvatar(name) {
-  const d = document.createElement("div");
-  d.className = "avatar";
-  d.style.background = colorFor(name);
-  d.textContent = name.charAt(0).toUpperCase();
-  return d;
-}
+const optsOf = (p) => ({ photo: p.photo || "", emoji: p.avatarEmoji || "", color: p.avatarColor || "" });
 
 function cleanName(raw) {
   let n = (raw || "").trim().slice(0, 30);
@@ -43,15 +33,25 @@ export async function ensureProfile(user, nameHint) {
     displayName: name,
     displayNameLower: name.toLowerCase(),
     bio: "",
+    photo: "",
+    avatarEmoji: "",
+    avatarColor: "",
     createdAt: serverTimestamp()
   });
-  return { displayName: name, bio: "" };
+  return { displayName: name, bio: "", photo: "", avatarEmoji: "", avatarColor: "" };
 }
 
 export async function onUserReady(user) {
   try {
     const p = await ensureProfile(user);
-    me = { uid: user.uid, displayName: p.displayName, bio: p.bio || "" };
+    me = {
+      uid: user.uid,
+      displayName: p.displayName,
+      bio: p.bio || "",
+      photo: p.photo || "",
+      emoji: p.avatarEmoji || "",
+      color: p.avatarColor || ""
+    };
     showMe();
   } catch (err) {
     console.error(err);
@@ -68,16 +68,126 @@ export function onUserGone() {
 
 function showMe() {
   $("userLine").textContent = "Signed in as " + me.displayName + (me.bio ? " · " + me.bio : "");
-  $("meBtn").textContent = me.displayName.charAt(0).toUpperCase();
+  const btn = $("meBtn");
+  btn.innerHTML = "";
+  btn.append(makeAvatar(me.displayName, me));
+}
+
+/* ---------- Picture editor (inside the profile pop-up) ---------- */
+function drawEditor() {
+  if (!editor) return;
+  const name = $("pName").value.trim() || (me ? me.displayName : "?");
+  editor.preview.innerHTML = "";
+  editor.preview.append(makeAvatar(name, draft));
+  editor.removeBtn.hidden = !draft.photo;
+  editor.emojiBtns.forEach((b) =>
+    b.classList.toggle("on", !draft.photo && b.dataset.emoji === draft.emoji)
+  );
+  editor.swatchBtns.forEach((b) =>
+    b.classList.toggle("on", b.dataset.color === draft.color)
+  );
+}
+
+function buildEditor() {
+  if (editor) return;
+  const wrap = document.createElement("div");
+  wrap.className = "avatar-editor";
+
+  const preview = document.createElement("div");
+
+  const actions = document.createElement("div");
+  actions.className = "avatar-actions";
+  const chooseBtn = document.createElement("button");
+  chooseBtn.type = "button";
+  chooseBtn.className = "av-btn";
+  chooseBtn.textContent = "Choose photo";
+  const removeBtn = document.createElement("button");
+  removeBtn.type = "button";
+  removeBtn.className = "av-btn";
+  removeBtn.textContent = "Remove photo";
+  actions.append(chooseBtn, removeBtn);
+
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = "image/*";
+  fileInput.hidden = true;
+
+  const hint = document.createElement("small");
+  hint.className = "av-hint";
+  hint.textContent = "Or pick an emoji and a color";
+
+  const grid = document.createElement("div");
+  grid.className = "emoji-grid";
+  const emojiBtns = [];
+  ["", ...emojis].forEach((e) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "emoji-btn";
+    b.dataset.emoji = e;
+    b.textContent = e === "" ? "Aa" : e;
+    b.style.fontSize = e === "" ? "0.9rem" : "";
+    b.addEventListener("click", () => {
+      draft.emoji = e;
+      draft.photo = "";
+      drawEditor();
+    });
+    grid.append(b);
+    emojiBtns.push(b);
+  });
+
+  const swatches = document.createElement("div");
+  swatches.className = "swatches";
+  const swatchBtns = [];
+  palette.forEach((c) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "swatch";
+    b.dataset.color = c;
+    b.style.background = c;
+    b.setAttribute("aria-label", "Color " + c);
+    b.addEventListener("click", () => {
+      draft.color = draft.color === c ? "" : c;
+      drawEditor();
+    });
+    swatches.append(b);
+    swatchBtns.push(b);
+  });
+
+  chooseBtn.addEventListener("click", () => fileInput.click());
+  removeBtn.addEventListener("click", () => {
+    draft.photo = "";
+    drawEditor();
+  });
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files && fileInput.files[0];
+    $("profileMsg").textContent = "";
+    if (file) {
+      try {
+        draft.photo = await photoFromFile(file);
+      } catch (err) {
+        $("profileMsg").textContent = err.message || "Could not use that picture.";
+      }
+    }
+    fileInput.value = "";
+    drawEditor();
+  });
+  $("pName").addEventListener("input", drawEditor);
+
+  wrap.append(preview, actions, hint, grid, swatches, fileInput);
+  $("profileForm").prepend(wrap);
+  editor = { preview, removeBtn, emojiBtns, swatchBtns };
 }
 
 /* ---------- My profile screen ---------- */
 $("meBtn").addEventListener("click", () => {
   if (!me) return;
+  buildEditor();
+  draft = { photo: me.photo, emoji: me.emoji, color: me.color };
   $("pName").value = me.displayName;
   $("pBio").value = me.bio;
   $("bioCount").textContent = me.bio.length + "/140";
   $("profileMsg").textContent = "";
+  drawEditor();
   $("profileModal").hidden = false;
 });
 $("pBio").addEventListener("input", () => {
@@ -102,11 +212,17 @@ $("profileForm").addEventListener("submit", async (e) => {
     await updateDoc(doc(db, "users", me.uid), {
       displayName: name,
       displayNameLower: name.toLowerCase(),
-      bio
+      bio,
+      photo: draft.photo,
+      avatarEmoji: draft.emoji,
+      avatarColor: draft.color
     });
     await updateProfile(auth.currentUser, { displayName: name });
     me.displayName = name;
     me.bio = bio;
+    me.photo = draft.photo;
+    me.emoji = draft.emoji;
+    me.color = draft.color;
     showMe();
     peopleLoaded = false;
     $("profileModal").hidden = true;
@@ -166,7 +282,7 @@ function renderPeople() {
     prev.className = "preview";
     prev.textContent = p.bio || "Hey there! I'm using KoKo.";
     info.append(name, prev);
-    btn.append(makeAvatar(p.displayName), info);
+    btn.append(makeAvatar(p.displayName, optsOf(p)), info);
     btn.addEventListener("click", () => openPerson(p));
     li.append(btn);
     list.append(li);
@@ -177,7 +293,7 @@ function openPerson(p) {
   selected = p;
   const holder = $("personAvatar");
   holder.innerHTML = "";
-  holder.append(makeAvatar(p.displayName));
+  holder.append(makeAvatar(p.displayName, optsOf(p)));
   $("personName").textContent = p.displayName;
   $("personBio").textContent = p.bio || "Hey there! I'm using KoKo.";
   $("personModal").hidden = false;
