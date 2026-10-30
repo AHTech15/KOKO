@@ -149,5 +149,13 @@
 
   <script type="module" src="auth.js"></script>
   <script type="module" src="chat.js"></script>
+<script>
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/KOKO/service-worker.js")
+      .catch(error => console.error("Service Worker:", error));
+  });
+}
+</script>
 </body>
 </html>
