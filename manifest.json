@@ -1,0 +1,25 @@
+
+{
+  "id": "/KOKO/",
+  "name": "KoKo",
+  "short_name": "KoKo",
+  "description": "Connect and chat with people on KoKo.",
+  "start_url": "/KOKO/",
+  "scope": "/KOKO/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#111111",
+  "background_color": "#111111",
+  "icons": [
+    {
+      "src": "/KOKO/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/KOKO/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
