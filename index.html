@@ -8,8 +8,6 @@
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="auth.css">
   <link rel="stylesheet" href="profile.css">
-<link rel="manifest" href="/KOKO/manifest.json">
-<meta name="theme-color" content="#111111">
 </head>
 <body>
 
@@ -149,13 +147,5 @@
 
   <script type="module" src="auth.js"></script>
   <script type="module" src="chat.js"></script>
-<script>
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/KOKO/service-worker.js")
-      .catch(error => console.error("Service Worker:", error));
-  });
-}
-</script>
 </body>
 </html>
