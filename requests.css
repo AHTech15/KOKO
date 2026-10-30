@@ -1,0 +1,33 @@
+.tabs { overflow-x: auto; }
+.tab { flex: none; white-space: nowrap; }
+
+.banner {
+  padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  text-align: center;
+  color: var(--muted);
+}
+.banner p { margin-bottom: 10px; }
+.banner-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.banner-actions button {
+  padding: 10px 16px;
+  border-radius: 999px;
+  font-weight: 700;
+  background: var(--bg);
+  color: var(--text);
+}
+.banner-actions .accept { background: var(--green); color: #fff; }
+.banner-actions .danger { color: #ef4444; }
+
+.modal-card textarea.req-text {
+  width: 100%;
+  padding: 13px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  outline: none;
+  resize: none;
+}
