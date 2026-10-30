@@ -1,7 +1,7 @@
 import { auth, db } from "./firebase.js";
 import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 import {
-  doc, getDoc, getDocs, setDoc, updateDoc, arrayUnion, arrayRemove,
+  doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, arrayUnion, arrayRemove,
   collection, query, where, orderBy, limit,
   onSnapshot, writeBatch, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
@@ -12,7 +12,7 @@ const appEl = $("app");
 const MAX_MEMBERS = 50;
 
 /* Extra styles */
-for (const href of ["chat.css", "group.css"]) {
+for (const href of ["chat.css", "group.css", "requests.css"]) {
   const l = document.createElement("link");
   l.rel = "stylesheet";
   l.href = href;
@@ -25,25 +25,40 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("sw.js").then((r) => (swReg = r)).catch(() => {});
 }
 
+/* A "Requests" tab, placed after "Chats" */
+const reqTab = document.createElement("button");
+reqTab.className = "tab";
+reqTab.dataset.filter = "requests";
+reqTab.textContent = "Requests";
+document.querySelector('.tab[data-filter="direct"]').after(reqTab);
+
+/* Banner above the message box (request buttons, blocked notice...) */
+const banner = document.createElement("div");
+banner.className = "banner";
+banner.hidden = true;
+$("composer").before(banner);
+
 const users = new Map();       // uid -> { displayName, bio, photo, emoji, color }
 const myReads = new Map();     // chatId -> when I last read it (ms)
 const readUnsubs = new Map();  // chatId -> unsubscribe function
+let blocked = new Set();       // uids I have blocked
 let unsubChats = null;
 let unsubMsgs = null;
 let unsubOtherRead = null;
-let chats = [];                // { id, type, name, members, admins, otherUid, lastMessage, lastMessageAt, lastSenderId }
-let current = null;            // { id, type, otherUid, name, count, seen }
+let unsubBlocks = null;
+let chats = [];
+let current = null;            // { id, type, otherUid, name, count, seen, hint }
 let filter = "all";
 let term = "";
 let firstSnapshot = true;
 let otherReadAt = 0;
-let lastItems = [];
+let rawItems = [];             // real messages of the open chat
+let lastItems = [];            // what is shown (includes the request message)
 let lastMarkedIncoming = 0;
 let infoRefresh = null;
 
 const myUid = () => auth.currentUser.uid;
 
-/* Picture settings of a person, for makeAvatar */
 const optsOf = (u) => ({
   photo: (u && u.photo) || "",
   emoji: (u && u.emoji) || "",
@@ -91,6 +106,23 @@ async function loadAllPeople() {
     arr.push({ uid: d.id, ...info });
   });
   return arr;
+}
+
+/* ---------- Request helpers ---------- */
+const isIncoming = (c) => c.type === "direct" && c.status === "pending" && c.requester !== myUid();
+const isMyRequest = (c) => c.type === "direct" && c.status !== "active" && c.requester === myUid();
+
+/* Does this chat belong in the normal Chats list? */
+function listable(c) {
+  if (c.type === "group") return true;
+  if (blocked.has(c.otherUid)) return false;
+  if (c.status === "active") return !!c.lastMessage;
+  return c.requester === myUid();   // my own sent requests (pending or declined)
+}
+
+function chatOf() {
+  if (!current) return null;
+  return chats.find((x) => x.id === current.id) || current.hint || null;
 }
 
 /* ---------- Alerts: sound, title count, notification ---------- */
@@ -144,7 +176,9 @@ function isUnread(c) {
 }
 
 function updateTitle() {
-  const n = chats.filter(isUnread).length;
+  const reqCount = chats.filter((c) => isIncoming(c) && !blocked.has(c.otherUid)).length;
+  const n = chats.filter((c) => listable(c) && isUnread(c)).length + reqCount;
+  reqTab.textContent = reqCount ? "Requests (" + reqCount + ")" : "Requests";
   document.title = n > 0 ? "(" + n + ") KoKo" : "KoKo";
 }
 
@@ -153,9 +187,19 @@ async function alertNew(n) {
   beep();
   if ("Notification" in window && Notification.permission === "granted" && document.hidden) {
     const sender = await getUser(n.senderUid);
-    const title = n.type === "group" ? n.name : sender.displayName;
     const text = n.text.slice(0, 100);
-    const body = n.type === "group" ? sender.displayName + ": " + text : text;
+    let title;
+    let body;
+    if (n.kind === "request") {
+      title = "New chat request";
+      body = sender.displayName + ": " + text;
+    } else if (n.type === "group") {
+      title = n.name;
+      body = sender.displayName + ": " + text;
+    } else {
+      title = sender.displayName;
+      body = text;
+    }
     try {
       if (swReg && swReg.showNotification) {
         swReg.showNotification(title, { body, tag: n.id });
@@ -185,6 +229,10 @@ function chatAvatar(c) {
 }
 
 function previewText(c) {
+  if (c.type === "direct") {
+    if (isIncoming(c)) return c.requestText;
+    if (isMyRequest(c)) return "⏳ Request sent";
+  }
   if (!c.lastMessage) return "No messages yet";
   const mine = c.lastSenderId === myUid();
   if (c.type === "group") {
@@ -200,15 +248,22 @@ function renderList() {
   const list = $("chatList");
   list.innerHTML = "";
 
-  const shown = chats.filter((c) => {
-    if (filter === "direct" && c.type !== "direct") return false;
-    if (filter === "group" && c.type !== "group") return false;
-    if (c.type === "direct" && !c.lastMessage) return false;
-    return chatTitle(c).toLowerCase().includes(term);
-  });
+  let shown;
+  if (filter === "requests") {
+    shown = chats.filter((c) => isIncoming(c) && !blocked.has(c.otherUid));
+  } else {
+    shown = chats.filter((c) => {
+      if (!listable(c)) return false;
+      if (filter === "direct" && c.type !== "direct") return false;
+      if (filter === "group" && c.type !== "group") return false;
+      return true;
+    });
+  }
+  shown = shown.filter((c) => chatTitle(c).toLowerCase().includes(term));
 
   if (shown.length === 0) {
-    if (filter === "group") list.append(note("No groups yet. Tap + New group to start one."));
+    if (filter === "requests") list.append(note("No chat requests."));
+    else if (filter === "group") list.append(note("No groups yet. Tap + New group to start one."));
     else if (term) list.append(note("No matching chats."));
     else list.append(note("No chats yet. Open People and tap someone to say hi."));
     return;
@@ -216,7 +271,7 @@ function renderList() {
 
   shown.forEach((c) => {
     const title = chatTitle(c);
-    const unread = isUnread(c);
+    const unread = filter !== "requests" && isUnread(c);
     const li = document.createElement("li");
     const btn = document.createElement("button");
     btn.className = "chat-item" + (current && current.id === c.id ? " active" : "") + (unread ? " unread" : "");
@@ -228,7 +283,8 @@ function renderList() {
     const name = document.createElement("strong");
     name.textContent = title;
     const time = document.createElement("small");
-    time.textContent = c.lastMessage ? formatTime(c.lastMessageAt) : "";
+    if (filter === "requests") time.textContent = formatTime(c.createdAt);
+    else time.textContent = c.lastMessage ? formatTime(c.lastMessageAt) : "";
     top.append(name, time);
     const prev = document.createElement("div");
     prev.className = "preview";
@@ -267,6 +323,14 @@ function watchReads(uid, list) {
 
 function startChats(user) {
   firstSnapshot = true;
+
+  unsubBlocks = onSnapshot(collection(db, "users", user.uid, "blocks"), (snap) => {
+    blocked = new Set(snap.docs.map((d) => d.id));
+    renderList();
+    updateTitle();
+    applyMode();
+  }, () => {});
+
   const q = query(collection(db, "chats"), where("members", "array-contains", user.uid));
   unsubChats = onSnapshot(q, async (snap) => {
     const prevChats = chats;
@@ -282,6 +346,10 @@ function startChats(user) {
         members: data.members || [],
         admins: data.admins || [],
         otherUid: type === "direct" ? data.members.find((m) => m !== user.uid) : null,
+        status: data.status || "active",
+        requester: data.requester || "",
+        requestText: data.requestText || "",
+        createdAt: data.createdAt ? data.createdAt.toMillis() : Date.now(),
         lastMessage: data.lastMessage || "",
         lastMessageAt: data.lastMessageAt ? data.lastMessageAt.toMillis() : Date.now(),
         lastSenderId: data.lastSenderId || ""
@@ -290,8 +358,15 @@ function startChats(user) {
 
     if (!firstSnapshot) {
       list.forEach((c) => {
-        if (!c.lastMessage || !c.lastSenderId || c.lastSenderId === user.uid) return;
         const before = prevChats.find((p) => p.id === c.id);
+        if (isIncoming(c)) {
+          if (!before) {
+            toAlert.push({ kind: "request", id: c.id, senderUid: c.requester, text: c.requestText });
+          }
+          return;
+        }
+        if (!c.lastMessage || !c.lastSenderId || c.lastSenderId === user.uid) return;
+        if (before && before.status === "pending" && c.status === "active") return;
         const isNew = before ? c.lastMessageAt > before.lastMessageAt : c.type === "direct";
         if (isNew) {
           toAlert.push({ id: c.id, type: c.type, name: c.name, senderUid: c.lastSenderId, text: c.lastMessage });
@@ -316,6 +391,8 @@ function startChats(user) {
         backToList();
       } else {
         refreshHeader();
+        applyMode();
+        redrawMessages();
       }
     }
     if (infoRefresh) infoRefresh(false);
@@ -334,12 +411,15 @@ function stopChats() {
   if (unsubChats) unsubChats();
   if (unsubMsgs) unsubMsgs();
   if (unsubOtherRead) unsubOtherRead();
+  if (unsubBlocks) unsubBlocks();
   readUnsubs.forEach((u) => u());
   readUnsubs.clear();
   myReads.clear();
-  unsubChats = unsubMsgs = unsubOtherRead = null;
+  unsubChats = unsubMsgs = unsubOtherRead = unsubBlocks = null;
+  blocked = new Set();
   chats = [];
   current = null;
+  rawItems = [];
   lastItems = [];
   otherReadAt = 0;
   lastMarkedIncoming = 0;
@@ -350,29 +430,98 @@ function stopChats() {
   $("messages").innerHTML = "";
   $("convo").hidden = true;
   $("empty").hidden = false;
+  banner.hidden = true;
+  $("composer").hidden = false;
   appEl.classList.remove("chat-open");
   document.title = "KoKo";
 }
 
 /* ---------- Open a conversation ---------- */
+function askRequest(name) {
+  return new Promise((resolve) => {
+    let done = false;
+    const m = openModal("Message " + name, () => {
+      if (!done) {
+        done = true;
+        resolve(null);
+      }
+    });
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      m.close();
+      resolve(v);
+    };
+    const hint = document.createElement("small");
+    hint.className = "hint";
+    hint.textContent = "They will see this and can accept or decline. Until they accept, you can send only this one message (up to 100 characters).";
+    const ta = document.createElement("textarea");
+    ta.className = "req-text";
+    ta.rows = 3;
+    ta.maxLength = 100;
+    ta.placeholder = "Hi! I'd like to chat.";
+    const err = document.createElement("p");
+    err.className = "auth-error";
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    actions.append(
+      makeButton("Cancel", "btn-ghost", () => finish(null)),
+      makeButton("Send request", "auth-submit", () => {
+        const text = ta.value.trim();
+        if (text.length < 1 || text.length > 100) {
+          err.textContent = "Write a message of 1 to 100 characters.";
+          return;
+        }
+        finish(text);
+      })
+    );
+    m.body.append(hint, ta, err, actions);
+  });
+}
+
 async function openChatWith(otherUid) {
   const me = myUid();
+  if (blocked.has(otherUid)) {
+    if (!confirm("You blocked this person. Unblock them to message?")) return;
+    try {
+      await unblockUser(otherUid);
+    } catch (err) {
+      console.error(err);
+      alert("Could not unblock. Please try again.");
+      return;
+    }
+  }
   const [a, b] = [me, otherUid].sort();
   const id = a + "_" + b;
   const ref = doc(db, "chats", id);
   try {
     const snap = await getDoc(ref);
-    if (!snap.exists()) {
-      await setDoc(ref, {
-        type: "direct",
-        members: [a, b],
-        createdAt: serverTimestamp(),
-        lastMessage: "",
-        lastMessageAt: serverTimestamp(),
-        lastSenderId: ""
-      });
+    if (snap.exists()) {
+      openConversation(id, { type: "direct", otherUid });
+      return;
     }
-    openConversation(id, { type: "direct", otherUid });
+    const u = await getUser(otherUid);
+    const text = await askRequest(u.displayName);
+    if (text === null) return;
+    await setDoc(ref, {
+      type: "direct",
+      members: [a, b],
+      status: "pending",
+      requester: me,
+      requestText: text,
+      createdAt: serverTimestamp(),
+      lastMessage: "",
+      lastMessageAt: serverTimestamp(),
+      lastSenderId: ""
+    });
+    openConversation(id, {
+      type: "direct",
+      otherUid,
+      status: "pending",
+      requester: me,
+      requestText: text,
+      createdAt: Date.now()
+    });
   } catch (err) {
     console.error(err);
     alert("Could not open this chat. Please try again.");
@@ -413,6 +562,90 @@ function refreshHeader() {
   }
 }
 
+/* Show request buttons / blocked notice instead of the message box when needed */
+function applyMode() {
+  banner.innerHTML = "";
+  banner.hidden = true;
+  $("composer").hidden = false;
+  if (!current || current.type !== "direct") return;
+  const c = chatOf();
+  if (!c) return;
+  const other = current.otherUid;
+  const name = (users.get(other) || { displayName: "this person" }).displayName;
+  const text = document.createElement("p");
+  const actions = document.createElement("div");
+  actions.className = "banner-actions";
+
+  if (blocked.has(other)) {
+    text.textContent = "You blocked " + name + ".";
+    actions.append(makeButton("Unblock", "", (b) => act(b, () => unblockUser(other))));
+  } else if (isIncoming(c)) {
+    text.textContent = name + " wants to chat with you.";
+    actions.append(
+      makeButton("Accept", "accept", (b) => act(b, () => acceptRequest(c))),
+      makeButton("Decline", "", (b) => act(b, () => declineRequest(c))),
+      makeButton("Block", "danger", (b) => act(b, async () => {
+        if (!confirm("Block " + name + "? They won't be told.")) return;
+        await blockUser(other, c);
+      }))
+    );
+  } else if (c.status !== "active") {
+    text.textContent = "Waiting for " + name + " to accept your request. You can message once they accept.";
+  } else {
+    return;
+  }
+  banner.append(text);
+  if (actions.childNodes.length) banner.append(actions);
+  banner.hidden = false;
+  $("composer").hidden = true;
+}
+
+async function acceptRequest(c) {
+  await updateDoc(doc(db, "chats", c.id), {
+    status: "active",
+    lastMessage: c.requestText,
+    lastMessageAt: serverTimestamp(),
+    lastSenderId: c.requester
+  });
+}
+
+async function declineRequest(c) {
+  await updateDoc(doc(db, "chats", c.id), { status: "declined" });
+  backToList();
+}
+
+async function blockUser(uid, c) {
+  await setDoc(doc(db, "users", myUid(), "blocks", uid), { createdAt: serverTimestamp() });
+  if (c && isIncoming(c)) {
+    try {
+      await updateDoc(doc(db, "chats", c.id), { status: "declined" });
+    } catch (e) { console.error(e); }
+  }
+  if (current && current.otherUid === uid) backToList();
+}
+
+async function unblockUser(uid) {
+  await deleteDoc(doc(db, "users", myUid(), "blocks", uid));
+}
+
+/* The request message is shown as the first bubble of the chat */
+function redrawMessages() {
+  if (!current) return;
+  const items = rawItems.slice();
+  const c = chatOf();
+  if (current.type === "direct" && c && c.requestText) {
+    items.unshift({
+      text: c.requestText,
+      senderId: c.requester,
+      mine: c.requester === myUid(),
+      time: c.createdAt,
+      pending: false
+    });
+  }
+  lastItems = items;
+  renderMessages(items);
+}
+
 async function openConversation(id, hint) {
   if (unsubMsgs) unsubMsgs();
   if (unsubOtherRead) unsubOtherRead();
@@ -426,8 +659,10 @@ async function openConversation(id, hint) {
     otherUid: c.otherUid || null,
     name: c.name || "",
     count: (c.members || []).length,
-    seen: !!found
+    seen: !!found,
+    hint: found ? null : { ...hint, id, members: [], lastMessage: "", lastSenderId: "" }
   };
+  rawItems = [];
   lastItems = [];
   otherReadAt = 0;
   lastMarkedIncoming = 0;
@@ -438,6 +673,8 @@ async function openConversation(id, hint) {
   $("messages").innerHTML = "";
   appEl.classList.add("chat-open");
   refreshHeader();
+  applyMode();
+  redrawMessages();
   renderList();
   updateTitle();
   markRead(true);
@@ -477,8 +714,8 @@ async function openConversation(id, hint) {
       await Promise.all([...senders].map(getUser));
     }
     if (!current || current.id !== id) return;
-    lastItems = items;
-    renderMessages(items);
+    rawItems = items;
+    redrawMessages();
     markRead(false);
   }, (err) => {
     console.error(err);
@@ -529,6 +766,8 @@ $("composer").addEventListener("submit", async (e) => {
   const input = $("msgInput");
   const text = input.value.trim().slice(0, 1000);
   if (!text || !current) return;
+  const c = chatOf();
+  if (current.type === "direct" && c && (c.status !== "active" || blocked.has(current.otherUid))) return;
   input.value = "";
   const uid = myUid();
   const batch = writeBatch(db);
@@ -642,7 +881,7 @@ async function openNewGroup() {
 
   let getSelected = () => [];
   try {
-    const people = (await loadAllPeople()).filter((p) => p.uid !== myUid());
+    const people = (await loadAllPeople()).filter((p) => p.uid !== myUid() && !blocked.has(p.uid));
     getSelected = renderPicker(list, people);
   } catch (e) {
     console.error(e);
@@ -790,7 +1029,7 @@ async function openGroupInfo() {
           b.disabled = true;
           try {
             const all = await loadAllPeople();
-            candidates = all.filter((p) => !c.members.includes(p.uid));
+            candidates = all.filter((p) => !c.members.includes(p.uid) && !blocked.has(p.uid));
             addMode = true;
             draw(true);
           } catch (e) {
@@ -852,8 +1091,39 @@ async function openGroupInfo() {
   draw(true);
 }
 
+/* ---------- Options for a one-to-one chat (block / unblock) ---------- */
+function openChatOptions() {
+  if (!current || current.type !== "direct") return;
+  const other = current.otherUid;
+  const u = users.get(other) || { displayName: "Unknown user", bio: "" };
+  const m = openModal(u.displayName);
+  const bio = document.createElement("p");
+  bio.className = "bio";
+  bio.style.cssText = "text-align:center;color:var(--muted);margin-bottom:8px;";
+  bio.textContent = u.bio || "Hey there! I'm using KoKo.";
+  m.body.append(bio);
+  if (blocked.has(other)) {
+    m.body.append(makeButton("Unblock " + u.displayName, "btn-danger", (b) => act(b, async () => {
+      await unblockUser(other);
+      m.close();
+    })));
+  } else {
+    m.body.append(makeButton("Block " + u.displayName, "btn-danger", (b) => act(b, async () => {
+      if (!confirm("Block " + u.displayName + "? They won't be told, and they can't message you.")) return;
+      await blockUser(other, chatOf());
+      m.close();
+    })));
+  }
+  const actions = document.createElement("div");
+  actions.className = "modal-actions";
+  actions.append(makeButton("Close", "btn-ghost", () => m.close()));
+  m.body.append(actions);
+}
+
 $("headName").parentElement.addEventListener("click", () => {
-  if (current && current.type === "group") openGroupInfo();
+  if (!current) return;
+  if (current.type === "group") openGroupInfo();
+  else openChatOptions();
 });
 
 /* ---------- Navigation and events ---------- */
@@ -862,7 +1132,10 @@ function backToList() {
   if (unsubOtherRead) unsubOtherRead();
   unsubMsgs = unsubOtherRead = null;
   current = null;
+  rawItems = [];
   lastItems = [];
+  banner.hidden = true;
+  $("composer").hidden = false;
   appEl.classList.remove("chat-open");
   $("convo").hidden = true;
   $("empty").hidden = false;
@@ -894,9 +1167,12 @@ $("chatList").before(newGroupBtn);
 
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
     newGroupBtn.hidden = tab.dataset.filter !== "group";
     if (tab.dataset.filter !== "people") {
       filter = tab.dataset.filter;
+      $("peopleList").hidden = true;
+      $("chatList").hidden = false;
       renderList();
     }
   });
